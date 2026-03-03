@@ -65,8 +65,12 @@ export default function Contributions() {
   }
 
   const calculateTotalContributions = () => {
-    // Each contribution is $1, so just count the number of contributions
-    return contributions.length * 1.00
+    // Calculate total based on actual ETH donated: each 0.0003 ETH = $1
+    return contributions.reduce((sum: number, contribution: any) => {
+      const donationInETH = Number(ethers.formatEther(contribution.donationAmount))
+      const donationInUSD = (donationInETH / 0.0003) * 1.00
+      return sum + donationInUSD
+    }, 0)
   }
 
   if (!isConnected) {
@@ -171,9 +175,8 @@ export default function Contributions() {
             <div className="divide-y divide-gray-200">
               {contributions.map((contribution) => {
                 const donationInETH = Number(ethers.formatEther(contribution.donationAmount))
-                // Since we're doing $1 donations (0.0003 ETH), we should display it as $1
-                // regardless of the actual ETH value
-                const donationInUSD = 1.00 // Fixed $1 per donation
+                // Calculate actual USD value: each 0.0003 ETH = $1
+                const donationInUSD = (donationInETH / 0.0003) * 1.00
 
                 return (
                   <motion.div
