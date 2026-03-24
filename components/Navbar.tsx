@@ -15,7 +15,19 @@ export default function Navbar() {
 
   const handleConnect = async () => {
     if (!peraWallet) return
-    try { await peraWallet.connect() } catch (e) { console.error(e) }
+    // If already connected, disconnect first then reconnect
+    try {
+      if (peraWallet.isConnected) {
+        await peraWallet.disconnect()
+      }
+      await peraWallet.connect()
+    } catch (e: any) {
+      if (e?.message?.includes('Session currently connected')) {
+        // Already connected — just ignore, wallet state will sync
+        return
+      }
+      console.error(e)
+    }
   }
 
   const handleDisconnect = () => activeWallet?.disconnect()
