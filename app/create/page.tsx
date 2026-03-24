@@ -16,7 +16,7 @@ const charityTypes = [
 ]
 
 export default function CreateCampaign() {
-  const { createCampaign, isConnected } = useWallet()
+  const { createCampaign, isConnected, account } = useWallet()
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({ charityType: 0, goalAlgo: '', influencerName: '', profileImageURL: '' })
@@ -27,6 +27,7 @@ export default function CreateCampaign() {
     setLoading(true)
     try {
       const goalMicro = Math.round(parseFloat(form.goalAlgo) * 1_000_000)
+      alert(`DEBUG: Sending from account: ${account}`)
       await createCampaign(form.charityType, goalMicro, form.influencerName, form.profileImageURL || 'https://via.placeholder.com/150')
       router.push('/dashboard')
     } catch (e: any) {
