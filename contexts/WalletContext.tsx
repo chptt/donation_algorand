@@ -1,6 +1,6 @@
 'use client'
 
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react'
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import algosdk from 'algosdk'
 import { PeraWalletConnect } from '@perawallet/connect'
 
@@ -42,8 +42,6 @@ export const DONATION_AMOUNT_MICRO = 1_000_000
 
 const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
 const AlgorandContext = createContext<AlgorandContextType | undefined>(undefined)
-
-// Single shared PeraWalletConnect instance
 const peraWallet = new PeraWalletConnect({ chainId: 416002 })
 
 function encodeUint8(v: number): Uint8Array { return new Uint8Array([v]) }
@@ -71,51 +69,37 @@ function decodeString(bytes: Uint8Array, offset: number): { value: string; end: 
   return { value: new TextDecoder().decode(bytes.slice(offset + 2, offset + 2 + len)), end: offset + 2 + len }
 }
 
-function campaignBoxName(campaignId: number): Uint8Array {
-  return new Uint8Array([...new TextEncoder().encode('c_'), ...encodeUint64(campaignId)])
+function campaignBoxName(id: number): Uint8Array {
+  return new Uint8Array([...new TextEncoder().encode('c_'), ...encodeUint64(id)])
 }
 
-function donorBoxName(campaignId: number, donor: string): Uint8Array {
-  return new Uint8Array([
-    ...new TextEncoder().encode('d_'),
-    ...algosdk.decodeAddress(donor).publicKey,
-    ...encodeUint64(campaignId),
-  ])
+function donorBoxName(id: number, donor: string): Uint8Array {
+  return new Uint8Array([...new TextEncoder().encode('d_'), ...algosdk.decodeAddress(donor).publicKey, ...encodeUint64(id)])
 }
 
-function boxRef(name: Uint8Array): algosdk.BoxReference {
-  return { appIndex: 0, name }
-}
+function boxRef(name: Uint8Array): algosdk.BoxReference { return { appIndex: 0, name } }
 
 let METHODS: { create_campaign: Uint8Array; donate: Uint8Array; withdraw: Uint8Array } | null = null
 function getMethods() {
-  if (!METHODS) {
-    METHODS = {
-      create_campaign: new Uint8Array(algosdk.ABIMethod.fromSignature('create_campaign(uint8,uint64,string,string)uint64').getSelector()),
-      donate:          new Uint8Array(algosdk.ABIMethod.fromSignature('donate(uint64,pay)void').getSelector()),
-      withdraw:        new Uint8Array(algosdk.ABIMethod.fromSignature('withdraw(uint64)void').getSelector()),
-    }
+  if (!METHODS) METHODS = {
+    create_campaign: new Uint8Array(algosdk.ABIMethod.fromSignature('create_campaign(uint8,uint64,string,string)uint64').getSelector()),
+    donate:          new Uint8Array(algosdk.ABIMethod.fromSignature('donate(uint64,pay)void').getSelector()),
+    withdraw:        new Uint8Array(algosdk.ABIMethod.fromSignature('withdraw(uint64)void').getSelector()),
   }
-  return METHODS
+  return METHODS!
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<string | null>(null)
 
   useEffect(() => {
-    // Reconnect existing session on page load
-    peraWallet.reconnectSession().then(accounts => {
-      if (accounts.length > 0) setAccount(accounts[0])
-    }).catch(() => {})
-
+    peraWallet.reconnectSession().then(a => { if (a.length > 0) setAccount(a[0]) }).catch(() => {})
     peraWallet.connector?.on('disconnect', () => setAccount(null))
   }, [])
 
   const connect = async () => {
     try {
-      // Always fully disconnect first to clear any stale session
       try { await peraWallet.disconnect() } catch {}
-      // Small delay to let WalletConnect clean up
       await new Promise(r => setTimeout(r, 300))
       const accounts = await peraWallet.connect()
       setAccount(accounts[0])
@@ -125,27 +109,17 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const disconnect = () => {
-    peraWallet.disconnect()
-    setAccount(null)
-  }
+  const disconnect = () => { peraWallet.disconnect(); setAccount(null) }
 
-  async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
-    const sender = account
-    if (!sender) throw new Error('Not connected')
-    // Build the signerTransactions array Pera expects
+  async function signAndSend(txns: algosdk.Transaction[], sender: string): Promise<void> {
     const txnGroup = txns.map(txn => ({ txn, signers: [sender] }))
-    let signedTxns: Uint8Array[]
+    let signed: Uint8Array[]
     try {
-      signedTxns = await peraWallet.signTransaction([txnGroup])
+      signed = await peraWallet.signTransaction([txnGroup])
     } catch (e: any) {
-      // User rejected or cancelled Ã¢â‚¬â€ do not submit
-      if (e?.data?.type === 'SIGN_TRANSACTIONS' || e?.message?.includes('rejected') || e?.message?.includes('cancelled')) {
-        throw new Error('Transaction cancelled by user')
-      }
-      throw e
+      throw new Error('Transaction cancelled by user')
     }
-    const { txid } = await algodClient.sendRawTransaction(signedTxns).do()
+    const { txid } = await algodClient.sendRawTransaction(signed).do()
     await algosdk.waitForConfirmation(algodClient, txid, 4)
   }
 
@@ -155,33 +129,42 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const sp = await algodClient.getTransactionParams().do()
     const info = await algodClient.getApplicationByID(APP_ID).do()
     const gs: any[] = (info.params as any).globalState || []
-    const counterEntry = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
-    const nextId = counterEntry ? Number(counterEntry.value.uint) : 0
-    const boxes = [boxRef(campaignBoxName(nextId))]
-    const appArgs = [m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)]
-    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs, boxes })
-    await signAndSend([txn])
+    const entry = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
+    const nextId = entry ? Number(entry.value.uint) : 0
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({
+      sender: account, suggestedParams: sp, appIndex: APP_ID,
+      appArgs: [m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)],
+      boxes: [boxRef(campaignBoxName(nextId))]
+    })
+    await signAndSend([txn], account)
   }
 
   const donate = async (campaignId: number, amountMicroAlgo: number) => {
     if (!account || APP_ID === 0) throw new Error('Not connected')
     const m = getMethods()
     const sp = await algodClient.getTransactionParams().do()
-    const appAddress = algosdk.getApplicationAddress(APP_ID)
-    const boxes = [boxRef(campaignBoxName(campaignId)), boxRef(donorBoxName(campaignId, account))]
-    const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: account, receiver: appAddress, amount: amountMicroAlgo, suggestedParams: sp })
-    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)], boxes })
+    const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: account, receiver: algosdk.getApplicationAddress(APP_ID), amount: amountMicroAlgo, suggestedParams: sp
+    })
+    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({
+      sender: account, suggestedParams: sp, appIndex: APP_ID,
+      appArgs: [m.donate, encodeUint64(campaignId)],
+      boxes: [boxRef(campaignBoxName(campaignId)), boxRef(donorBoxName(campaignId, account))]
+    })
     algosdk.assignGroupID([payTxn, appTxn])
-    await signAndSend([payTxn, appTxn])
+    await signAndSend([payTxn, appTxn], account)
   }
 
   const withdraw = async (campaignId: number) => {
     if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
     const m = getMethods()
     const sp = await algodClient.getTransactionParams().do()
-    const boxes = [boxRef(campaignBoxName(campaignId))]
-    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.withdraw, encodeUint64(campaignId)], boxes })
-    await signAndSend([txn])
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({
+      sender: account, suggestedParams: sp, appIndex: APP_ID,
+      appArgs: [m.withdraw, encodeUint64(campaignId)],
+      boxes: [boxRef(campaignBoxName(campaignId))]
+    })
+    await signAndSend([txn], account)
   }
 
   const getTotalCampaigns = async (): Promise<number> => {
