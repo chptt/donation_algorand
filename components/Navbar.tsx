@@ -2,68 +2,13 @@
 
 import Link from 'next/link'
 import { useWallet } from '@/contexts/WalletContext'
-import { useWallet as useUseWallet } from '@txnlab/use-wallet-react'
 import { motion } from 'framer-motion'
 import { Wallet, Heart, Plus, BarChart3, History } from 'lucide-react'
 
 export default function Navbar() {
-  const { account, isConnected } = useWallet()
-  const { wallets, activeWallet } = useUseWallet()
+  const { account, isConnected, connect, disconnect } = useWallet()
 
   const fmt = (addr: string) => addr.slice(0, 6) + '...' + addr.slice(-4)
-  const peraWallet = wallets?.find(w => w.id === 'pera')
-
-  const handleConnect = async () => {
-    if (!peraWallet) return
-    try {
-      // Clear ALL pera/walletconnect session data from localStorage first
-      // This forces Pera to create a fresh session with the currently active account
-      Object.keys(localStorage).forEach(key => {
-        if (
-          key.startsWith('pera') ||
-          key.startsWith('walletconnect') ||
-          key.startsWith('wc@') ||
-          key.includes('PeraWallet') ||
-          key.includes('use-wallet')
-        ) {
-          localStorage.removeItem(key)
-        }
-      })
-      await peraWallet.connect()
-    } catch (e: any) {
-      if (e?.message?.includes('Session currently connected')) {
-        // Session exists — disconnect fully then reconnect
-        try {
-          await peraWallet.disconnect()
-        } catch {}
-        try {
-          await peraWallet.connect()
-        } catch (e2: any) {
-          console.error('Reconnect failed:', e2)
-        }
-        return
-      }
-      console.error(e)
-    }
-  }
-
-  const handleDisconnect = async () => {
-    try {
-      await activeWallet?.disconnect()
-    } catch {}
-    // Also clear localStorage to prevent stale session on next connect
-    Object.keys(localStorage).forEach(key => {
-      if (
-        key.startsWith('pera') ||
-        key.startsWith('walletconnect') ||
-        key.startsWith('wc@') ||
-        key.includes('PeraWallet') ||
-        key.includes('use-wallet')
-      ) {
-        localStorage.removeItem(key)
-      }
-    })
-  }
 
   return (
     <motion.nav initial={{ y: -100 }} animate={{ y: 0 }}
@@ -93,10 +38,10 @@ export default function Navbar() {
             {isConnected ? (
               <div className="flex items-center space-x-3">
                 <span className="text-sm text-gray-400 font-mono bg-gray-800 px-3 py-1 rounded-full">{fmt(account!)}</span>
-                <button onClick={handleDisconnect} className="btn-secondary text-sm py-1.5">Disconnect</button>
+                <button onClick={disconnect} className="btn-secondary text-sm py-1.5">Disconnect</button>
               </div>
             ) : (
-              <button onClick={handleConnect} className="btn-primary flex items-center space-x-2 py-1.5">
+              <button onClick={connect} className="btn-primary flex items-center space-x-2 py-1.5">
                 <Wallet className="h-4 w-4" /><span>Connect Wallet</span>
               </button>
             )}
