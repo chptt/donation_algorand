@@ -126,10 +126,20 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }
 
   async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
-    if (!account) throw new Error('Not connected')
+    const sender = account
+    if (!sender) throw new Error('Not connected')
     // Build the signerTransactions array Pera expects
-    const txnGroup = txns.map(txn => ({ txn, signers: [account] }))
-    const signedTxns = await peraWallet.signTransaction([txnGroup])
+    const txnGroup = txns.map(txn => ({ txn, signers: [sender] }))
+    let signedTxns: Uint8Array[]
+    try {
+      signedTxns = await peraWallet.signTransaction([txnGroup])
+    } catch (e: any) {
+      // User rejected or cancelled — do not submit
+      if (e?.data?.type === 'SIGN_TRANSACTIONS' || e?.message?.includes('rejected') || e?.message?.includes('cancelled')) {
+        throw new Error('Transaction cancelled by user')
+      }
+      throw e
+    }
     const { txid } = await algodClient.sendRawTransaction(signedTxns).do()
     await algosdk.waitForConfirmation(algodClient, txid, 4)
   }
