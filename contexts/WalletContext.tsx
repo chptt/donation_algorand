@@ -99,8 +99,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connect = async () => {
     try {
-      try { await peraWallet.disconnect() } catch {}
-      await new Promise(r => setTimeout(r, 300))
+      // Wipe stale WalletConnect session from localStorage so Pera starts fresh
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('walletconnect')
+        localStorage.removeItem('PeraWallet.Wallet')
+      }
       const accounts = await peraWallet.connect()
       setAccount(accounts[0])
     } catch (e: any) {
