@@ -44,7 +44,7 @@ const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
 const AlgorandContext = createContext<AlgorandContextType | undefined>(undefined)
 
 // Single shared PeraWalletConnect instance
-const peraWallet = new PeraWalletConnect({ network: 'testnet' })
+const peraWallet = new PeraWalletConnect({ chainId: 416002 })
 
 function encodeUint8(v: number): Uint8Array { return new Uint8Array([v]) }
 
