@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { createContext, useContext, ReactNode } from 'react'
 import algosdk from 'algosdk'
@@ -30,7 +30,6 @@ interface AlgorandContextType {
   getDonorAmount: (campaignId: number, donor: string) => Promise<number>
   getCampaignsByCreator: (creator: string) => Promise<Campaign[]>
 }
-
 const ALGOD_TOKEN  = process.env.NEXT_PUBLIC_ALGOD_TOKEN  || ''
 const ALGOD_SERVER = process.env.NEXT_PUBLIC_ALGOD_SERVER || 'https://testnet-api.algonode.cloud'
 const ALGOD_PORT   = process.env.NEXT_PUBLIC_ALGOD_PORT   || ''
@@ -92,54 +91,58 @@ function getMethods() {
   }
   return METHODS
 }
-
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const { activeAddress, signTransactions, algodClient: walletAlgod } = useUseWallet()
-  const account = activeAddress ?? null
-  const client = (walletAlgod as any) ?? algodClient
+  // Store entire walletState so each function reads the LATEST activeAddress at call time (avoids stale closure)
+  const walletState = useUseWallet()
+  const account = walletState.activeAddress ?? null
 
   async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
-    // Pass Transaction[] directly — use-wallet handles encoding per wallet type
-    const signedResults = await signTransactions(txns)
-    // Filter out any null entries (unsigned slots in group txns)
+    const signedResults = await walletState.signTransactions(txns)
     const signed = signedResults.filter((s): s is Uint8Array => s !== null)
     if (signed.length === 0) throw new Error('No transactions were signed')
-    const { txid } = await client.sendRawTransaction(signed).do()
-    await algosdk.waitForConfirmation(client, txid, 4)
+    const activeClient = (walletState.algodClient as any) ?? algodClient
+    const { txid } = await activeClient.sendRawTransaction(signed).do()
+    await algosdk.waitForConfirmation(activeClient, txid, 4)
   }
 
   const createCampaign = async (charityType: number, goalMicroAlgo: number, name: string, imageUrl: string) => {
-    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
+    const sender = walletState.activeAddress
+    if (!sender || APP_ID === 0) throw new Error('Not connected or app not deployed')
     const m = getMethods()
-    const sp = await client.getTransactionParams().do()
+    const activeClient = (walletState.algodClient as any) ?? algodClient
+    const sp = await activeClient.getTransactionParams().do()
     const info = await algodClient.getApplicationByID(APP_ID).do()
     const gs: any[] = (info.params as any).globalState || []
     const counterEntry = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
     const nextId = counterEntry ? Number(counterEntry.value.uint) : 0
     const boxes = [boxRef(campaignBoxName(nextId))]
     const appArgs = [m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)]
-    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs, boxes })
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender, suggestedParams: sp, appIndex: APP_ID, appArgs, boxes })
     await signAndSend([txn])
   }
 
   const donate = async (campaignId: number, amountMicroAlgo: number) => {
-    if (!account || APP_ID === 0) throw new Error('Not connected')
+    const sender = walletState.activeAddress
+    if (!sender || APP_ID === 0) throw new Error('Not connected')
     const m = getMethods()
-    const sp = await client.getTransactionParams().do()
+    const activeClient = (walletState.algodClient as any) ?? algodClient
+    const sp = await activeClient.getTransactionParams().do()
     const appAddress = algosdk.getApplicationAddress(APP_ID)
-    const boxes = [boxRef(campaignBoxName(campaignId)), boxRef(donorBoxName(campaignId, account))]
-    const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: account, receiver: appAddress, amount: amountMicroAlgo, suggestedParams: sp })
-    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)], boxes })
+    const boxes = [boxRef(campaignBoxName(campaignId)), boxRef(donorBoxName(campaignId, sender))]
+    const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender, receiver: appAddress, amount: amountMicroAlgo, suggestedParams: sp })
+    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)], boxes })
     algosdk.assignGroupID([payTxn, appTxn])
     await signAndSend([payTxn, appTxn])
   }
 
   const withdraw = async (campaignId: number) => {
-    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
+    const sender = walletState.activeAddress
+    if (!sender || APP_ID === 0) throw new Error('Not connected or app not deployed')
     const m = getMethods()
-    const sp = await client.getTransactionParams().do()
+    const activeClient = (walletState.algodClient as any) ?? algodClient
+    const sp = await activeClient.getTransactionParams().do()
     const boxes = [boxRef(campaignBoxName(campaignId))]
-    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.withdraw, encodeUint64(campaignId)], boxes })
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.withdraw, encodeUint64(campaignId)], boxes })
     await signAndSend([txn])
   }
 
