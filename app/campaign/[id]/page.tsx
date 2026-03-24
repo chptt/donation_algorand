@@ -10,7 +10,7 @@ const charityIcons  = [Home, Utensils, Heart, GraduationCap, Wrench, Waves]
 const charityColors = ['charity-housing','charity-meals','charity-medical','charity-education','charity-equipment','charity-rivercleaning']
 
 export default function CampaignDetail({ params }: { params: { id: string } }) {
-  const { getCampaign, donate, isConnected } = useWallet()
+  const { getCampaign, donate, isConnected, account } = useWallet()
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [loading, setLoading]   = useState(true)
   const [donating, setDonating] = useState(false)
@@ -116,7 +116,11 @@ export default function CampaignDetail({ params }: { params: { id: string } }) {
                   </div>
                   <span className="text-sm text-gray-500">per donation</span>
                 </div>
-                {isConnected ? (
+                {!isConnected ? (
+                  <p className="text-center text-gray-400">Connect your Pera Wallet to donate</p>
+                ) : account === campaign.creator ? (
+                  <p className="text-center text-gray-500 italic">You cannot donate to your own campaign</p>
+                ) : (
                   <button onClick={handleDonate} disabled={donating}
                     className="w-full btn-primary py-3 text-lg disabled:opacity-50 disabled:cursor-not-allowed">
                     {donating ? (
@@ -126,8 +130,6 @@ export default function CampaignDetail({ params }: { params: { id: string } }) {
                       </div>
                     ) : `Donate ${donationAlgo} ALGO`}
                   </button>
-                ) : (
-                  <p className="text-center text-gray-400">Connect your Pera Wallet to donate</p>
                 )}
               </div>
             )}
