@@ -5,20 +5,7 @@ import { WalletProvider as UseWalletProvider, WalletManager, WalletId, NetworkId
 import { WalletProvider } from '@/contexts/WalletContext'
 
 const manager = new WalletManager({
-  wallets: [
-    WalletId.DEFLY,
-    WalletId.PERA,
-    WalletId.EXODUS,
-    WalletId.LUTE,
-    {
-      id: WalletId.MNEMONIC,
-      options: { persistToStorage: false },
-    },
-    {
-      id: WalletId.WALLETCONNECT,
-      options: { projectId: 'fcfde0713d43baa0d23be0773c80a72b' },
-    },
-  ],
+  wallets: [WalletId.PERA],
   network: NetworkId.TESTNET,
 } as any)
 
