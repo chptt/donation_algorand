@@ -113,10 +113,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connect = async () => {
     try {
+      // Kill any existing session first to avoid "Session currently connected" error
+      if (peraWallet.connector?.connected) {
+        try { await peraWallet.connector.killSession() } catch {}
+      }
       const accounts = await peraWallet.connect()
       setAccount(accounts[0])
     } catch (e: any) {
-      if (e?.data?.type !== 'CONNECT_MODAL_CLOSED') throw e
+      if (e?.data?.type === 'CONNECT_MODAL_CLOSED') return
+      console.error('Pera connect error:', e)
     }
   }
 
@@ -134,7 +139,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     try {
       signedTxns = await peraWallet.signTransaction([txnGroup])
     } catch (e: any) {
-      // User rejected or cancelled — do not submit
+      // User rejected or cancelled â€” do not submit
       if (e?.data?.type === 'SIGN_TRANSACTIONS' || e?.message?.includes('rejected') || e?.message?.includes('cancelled')) {
         throw new Error('Transaction cancelled by user')
       }
