@@ -2,300 +2,148 @@
 
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { useWallet } from '@/contexts/WalletContext'
-import { ethers } from 'ethers'
+import { useWallet, Campaign } from '@/contexts/WalletContext'
 import Link from 'next/link'
-import { BarChart3, DollarSign, TrendingUp, Wallet, Eye, Download, Heart } from 'lucide-react'
+import { BarChart3, Coins, TrendingUp, Wallet, Eye, Download, Heart } from 'lucide-react'
 
-interface Campaign {
-  tokenId: number
-  charityType: number
-  goalAmount: string
-  totalDonations: string
-  creator: string
-  influencerName: string
-  profileImageURL: string
-  active: boolean
-  createdAt: number
-}
-
-const charityTypes = ['Housing', 'Meals', 'Medical', 'Education', 'Equipment', 'RiverCleaning']
+const charityTypes = ['Housing', 'Meals', 'Medical', 'Education', 'Equipment', 'River Cleaning']
 
 export default function Dashboard() {
-  const { contract, account, isConnected, ethPrice } = useWallet()
+  const { getCampaignsByCreator, withdraw, account, isConnected } = useWallet()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]     = useState(true)
   const [withdrawing, setWithdrawing] = useState<number | null>(null)
 
-  useEffect(() => {
-    if (isConnected && account) {
-      fetchUserCampaigns()
-    }
-  }, [contract, account, isConnected])
+  useEffect(() => { if (isConnected && account) fetchCampaigns() }, [account, isConnected])
 
-  const fetchUserCampaigns = async () => {
-    if (!contract || !account) return
-    
-    try {
-      const campaignIds = await contract.getCampaignsByCreator(account)
-      const campaignPromises = campaignIds.map(async (id: bigint) => {
-        const campaignData = await contract.campaigns(id)
-        return {
-          tokenId: Number(campaignData.tokenId),
-          charityType: Number(campaignData.charityType),
-          goalAmount: campaignData.goalAmount.toString(),
-          totalDonations: campaignData.totalDonations.toString(),
-          creator: campaignData.creator,
-          influencerName: campaignData.influencerName,
-          profileImageURL: campaignData.profileImageURL,
-          active: campaignData.active,
-          createdAt: Number(campaignData.createdAt)
-        }
-      })
-      
-      const userCampaigns = await Promise.all(campaignPromises)
-      setCampaigns(userCampaigns)
-    } catch (error: any) {
-      console.error('Error fetching user campaigns:', error)
-    } finally {
-      setLoading(false)
-    }
+  const fetchCampaigns = async () => {
+    setLoading(true)
+    try { setCampaigns(await getCampaignsByCreator(account!)) }
+    catch (e) { console.error(e) }
+    finally { setLoading(false) }
   }
 
-  const handleWithdraw = async (tokenId: number) => {
-    if (!contract) return
-
-    setWithdrawing(tokenId)
+  const handleWithdraw = async (id: number) => {
+    setWithdrawing(id)
     try {
-      const tx = await contract.withdraw(tokenId)
-      await tx.wait()
-      
-      // Refresh campaigns
-      await fetchUserCampaigns()
+      await withdraw(id)
+      await fetchCampaigns()
       alert('Withdrawal successful!')
-    } catch (error: any) {
-      console.error('Error withdrawing:', error)
-      alert('Error withdrawing funds. Please try again.')
-    } finally {
-      setWithdrawing(null)
-    }
+    } catch (e: any) {
+      alert(`Withdrawal failed: ${e?.message || 'Please try again.'}`)
+    } finally { setWithdrawing(null) }
   }
 
-  const calculateStats = () => {
-    // Calculate total raised: each 0.0003 ETH = $1
-    const totalRaised = campaigns.reduce((sum: number, campaign: any) => {
-      const donationsInETH = Number(ethers.formatEther(campaign.totalDonations))
-      const donationsInUSD = (donationsInETH / 0.0003) * 1.00
-      return sum + donationsInUSD
-    }, 0)
-    
-    const activeCampaigns = campaigns.filter(c => c.active).length
-    const totalGoal = campaigns.reduce((sum: number, campaign: any) => {
-      return sum + (Number(ethers.formatEther(campaign.goalAmount)) / 10) // Adjust for $1 donations
-    }, 0)
-    
-    return { totalRaised, activeCampaigns, totalGoal }
-  }
+  const totalRaised = campaigns.reduce((s, c) => s + c.totalDonations, 0) / 1_000_000
+  const totalGoal   = campaigns.reduce((s, c) => s + c.goalAmount, 0) / 1_000_000
+  const active      = campaigns.filter(c => c.active).length
 
-  if (!isConnected) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Wallet className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">Connect Your Wallet</h2>
-          <p className="text-gray-600">Please connect your wallet to view your dashboard</p>
-        </div>
+  if (!isConnected) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center">
+        <Wallet className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+        <h2 className="text-2xl font-bold text-gray-900 mb-4">Connect Your Wallet</h2>
+        <p className="text-gray-600">Please connect your Pera Wallet to view your dashboard</p>
       </div>
-    )
-  }
-
-  const stats = calculateStats()
+    </div>
+  )
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
-        >
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Dashboard</h1>
-          <p className="text-gray-600">Manage your campaigns and track your impact</p>
+          <p className="text-gray-600">Manage your Algorand campaigns</p>
         </motion.div>
 
-        {/* Stats Cards */}
+        {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="bg-white rounded-lg shadow-lg p-6"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Campaigns</p>
-                <p className="text-2xl font-bold text-gray-900">{campaigns.length}</p>
+          {[
+            { label: 'Total Campaigns', value: campaigns.length, icon: BarChart3, color: 'primary' },
+            { label: 'Active Campaigns', value: active, icon: TrendingUp, color: 'green' },
+            { label: 'Total Raised (ALGO)', value: totalRaised.toFixed(2), icon: Coins, color: 'blue' },
+            { label: 'Total Goal (ALGO)', value: totalGoal.toFixed(2), icon: TrendingUp, color: 'purple' },
+          ].map(({ label, value, icon: Icon, color }, i) => (
+            <motion.div key={label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }}
+              className="bg-white rounded-lg shadow-lg p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-600">{label}</p>
+                  <p className={`text-2xl font-bold text-${color}-600`}>{value}</p>
+                </div>
+                <Icon className={`h-8 w-8 text-${color}-600`} />
               </div>
-              <BarChart3 className="h-8 w-8 text-primary-600" />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="bg-white rounded-lg shadow-lg p-6"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Active Campaigns</p>
-                <p className="text-2xl font-bold text-green-600">{stats.activeCampaigns}</p>
-              </div>
-              <TrendingUp className="h-8 w-8 text-green-600" />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="bg-white rounded-lg shadow-lg p-6"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Raised</p>
-                <p className="text-2xl font-bold text-blue-600">${stats.totalRaised.toFixed(2)}</p>
-              </div>
-              <DollarSign className="h-8 w-8 text-blue-600" />
-            </div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="bg-white rounded-lg shadow-lg p-6"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Goal</p>
-                <p className="text-2xl font-bold text-purple-600">${stats.totalGoal.toFixed(2)}</p>
-              </div>
-              <TrendingUp className="h-8 w-8 text-purple-600" />
-            </div>
-          </motion.div>
+            </motion.div>
+          ))}
         </div>
 
-        {/* Campaigns Table */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="bg-white rounded-lg shadow-lg overflow-hidden"
-        >
+        {/* Table */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
+          className="bg-white rounded-lg shadow-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-xl font-semibold text-gray-900">Your Campaigns</h2>
           </div>
 
           {loading ? (
             <div className="flex justify-center items-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600" />
             </div>
           ) : campaigns.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-gray-600 mb-4">You haven't created any campaigns yet</p>
-              <Link href="/create">
-                <button className="btn-primary">Create Your First Campaign</button>
-              </Link>
+              <p className="text-gray-600 mb-4">No campaigns yet</p>
+              <Link href="/create"><button className="btn-primary">Create Your First Campaign</button></Link>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Campaign
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Goal
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Raised
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Actions
-                    </th>
+                    {['Campaign','Type','Goal (ALGO)','Raised (ALGO)','Status','Actions'].map(h => (
+                      <th key={h} className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">{h}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {campaigns.map((campaign) => {
-                    const goalInUSD = Number(ethers.formatEther(campaign.goalAmount))
-                    const donationsInETH = Number(ethers.formatEther(campaign.totalDonations))
-                    const donationsInUSD = (donationsInETH / 0.0003) * 1.00
-                    const adjustedGoalInUSD = goalInUSD / 10
-                    const progressPercentage = adjustedGoalInUSD > 0 ? Math.min((donationsInUSD / adjustedGoalInUSD) * 100, 100) : 0
-
+                  {campaigns.map(c => {
+                    const raised   = c.totalDonations / 1_000_000
+                    const goal     = c.goalAmount / 1_000_000
+                    const progress = goal > 0 ? Math.min((raised / goal) * 100, 100) : 0
                     return (
-                      <tr key={campaign.tokenId} className="hover:bg-gray-50">
+                      <tr key={c.campaignId} className="hover:bg-gray-50">
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="flex items-center">
                             <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center mr-3">
                               <Heart className="h-5 w-5 text-gray-600" />
                             </div>
                             <div>
-                              <div className="text-sm font-medium text-gray-900">
-                                {campaign.influencerName}
-                              </div>
-                              <div className="text-sm text-gray-500">
-                                ID: {campaign.tokenId}
-                              </div>
+                              <div className="text-sm font-medium text-gray-900">{c.influencerName}</div>
+                              <div className="text-sm text-gray-500">ID: {c.campaignId}</div>
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {charityTypes[campaign.charityType]}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          ${adjustedGoalInUSD.toFixed(2)}
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{charityTypes[c.charityType]}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{goal.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm text-gray-900">{raised.toFixed(4)}</div>
+                          <div className="text-xs text-gray-500">{progress.toFixed(1)}% of goal</div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">${donationsInUSD.toFixed(2)}</div>
-                          <div className="text-xs text-gray-500">{progressPercentage.toFixed(1)}% of goal</div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                            campaign.active 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-gray-100 text-gray-800'
-                          }`}>
-                            {campaign.active ? 'Active' : 'Completed'}
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${c.active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                            {c.active ? 'Active' : 'Completed'}
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                          <Link href={`/campaign/${campaign.tokenId}`}>
+                          <Link href={`/campaign/${c.campaignId}`}>
                             <button className="text-primary-600 hover:text-primary-900 inline-flex items-center space-x-1">
-                              <Eye className="h-4 w-4" />
-                              <span>View</span>
+                              <Eye className="h-4 w-4" /><span>View</span>
                             </button>
                           </Link>
-                          {campaign.active && donationsInETH > 0 && (
-                            <button
-                              onClick={() => handleWithdraw(campaign.tokenId)}
-                              disabled={withdrawing === campaign.tokenId}
-                              className="text-green-600 hover:text-green-900 inline-flex items-center space-x-1 disabled:opacity-50"
-                            >
-                              {withdrawing === campaign.tokenId ? (
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600"></div>
-                              ) : (
-                                <Download className="h-4 w-4" />
-                              )}
+                          {c.active && c.totalDonations > 0 && (
+                            <button onClick={() => handleWithdraw(c.campaignId)} disabled={withdrawing === c.campaignId}
+                              className="text-green-600 hover:text-green-900 inline-flex items-center space-x-1 disabled:opacity-50">
+                              {withdrawing === c.campaignId
+                                ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-green-600" />
+                                : <Download className="h-4 w-4" />}
                               <span>Withdraw</span>
                             </button>
                           )}

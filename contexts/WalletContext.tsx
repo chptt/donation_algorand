@@ -1,163 +1,185 @@
 'use client'
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { ethers } from 'ethers'
+import React, { createContext, useContext, ReactNode } from 'react'
+import algosdk from 'algosdk'
+import { useWallet as useUseWallet } from '@txnlab/use-wallet-react'
 
-interface WalletContextType {
-  account: string | null
-  provider: ethers.BrowserProvider | null
-  signer: ethers.JsonRpcSigner | null
-  contract: ethers.Contract | null
-  isConnected: boolean
-  connectWallet: () => Promise<void>
-  disconnectWallet: () => void
-  ethPrice: number
-  requiredETH: string
+export interface Campaign {
+  campaignId: number
+  charityType: number
+  goalAmount: number
+  totalDonations: number
+  creator: string
+  influencerName: string
+  profileImageURL: string
+  active: boolean
+  createdAt: number
 }
 
-const WalletContext = createContext<WalletContextType | undefined>(undefined)
+interface AlgorandContextType {
+  account: string | null
+  isConnected: boolean
+  algodClient: algosdk.Algodv2
+  appId: number
+  createCampaign: (charityType: number, goalMicroAlgo: number, name: string, imageUrl: string) => Promise<void>
+  donate: (campaignId: number, amountMicroAlgo: number) => Promise<void>
+  withdraw: (campaignId: number) => Promise<void>
+  getCampaign: (campaignId: number) => Promise<Campaign | null>
+  getAllCampaigns: () => Promise<Campaign[]>
+  getTotalCampaigns: () => Promise<number>
+  getDonorAmount: (campaignId: number, donor: string) => Promise<number>
+  getCampaignsByCreator: (creator: string) => Promise<Campaign[]>
+}
 
-const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || ''
-const SEPOLIA_CHAIN_ID = process.env.NEXT_PUBLIC_SEPOLIA_CHAIN_ID || '11155111'
+const ALGOD_TOKEN  = process.env.NEXT_PUBLIC_ALGOD_TOKEN  || ''
+const ALGOD_SERVER = process.env.NEXT_PUBLIC_ALGOD_SERVER || 'https://testnet-api.algonode.cloud'
+const ALGOD_PORT   = process.env.NEXT_PUBLIC_ALGOD_PORT   || ''
+export const APP_ID = parseInt(process.env.NEXT_PUBLIC_ALGORAND_APP_ID || '0')
+export const DONATION_AMOUNT_MICRO = 1_000_000
 
-const CONTRACT_ABI = [
-  "function mintMyNFT(uint8 _charityType, uint256 _goalAmount, string memory _influencerName, string memory _profileImageURL) public returns (uint256)",
-  "function donate(uint256 _tokenId) public payable",
-  "function withdraw(uint256 _tokenId) public",
-  "function getCampaignsByCreator(address _creator) public view returns (uint256[] memory)",
-  "function viewRequiredETH() public view returns (uint256)",
-  "function getLatestPrice() public view returns (int256)",
-  "function getAllCampaigns() public view returns (tuple(uint256 tokenId, uint8 charityType, uint256 goalAmount, uint256 totalDonations, address creator, string influencerName, string profileImageURL, bool active, uint256 createdAt)[] memory)",
-  "function getUserContributions(address _user) public view returns (uint256[] memory)",
-  "function getUserDonationAmount(address _user, uint256 _tokenId) public view returns (uint256)",
-  "function campaigns(uint256) public view returns (uint256 tokenId, uint8 charityType, uint256 goalAmount, uint256 totalDonations, address creator, string influencerName, string profileImageURL, bool active, uint256 createdAt)",
-  "event CampaignCreated(uint256 indexed tokenId, address indexed creator, uint8 charityType, uint256 goalAmount)",
-  "event DonationMade(uint256 indexed tokenId, address indexed donor, uint256 amount)",
-  "event Withdrawal(uint256 indexed tokenId, address indexed creator, uint256 amount)"
-]
+const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
+
+const AlgorandContext = createContext<AlgorandContextType | undefined>(undefined)
+
+function encodeUint8(v: number): Uint8Array { return new Uint8Array([v]) }
+
+function encodeUint64(v: number | bigint): Uint8Array {
+  const buf = new Uint8Array(8)
+  let tmp = BigInt(v)
+  for (let i = 7; i >= 0; i--) { buf[i] = Number(tmp & BigInt(0xff)); tmp >>= BigInt(8) }
+  return buf
+}
+
+function encodeString(s: string): Uint8Array {
+  const bytes = new TextEncoder().encode(s)
+  return new Uint8Array([(bytes.length >> 8) & 0xff, bytes.length & 0xff, ...bytes])
+}
+
+function decodeUint64(bytes: Uint8Array, offset = 0): number {
+  let v = BigInt(0)
+  for (let i = 0; i < 8; i++) v = (v << BigInt(8)) | BigInt(bytes[offset + i])
+  return Number(v)
+}
+
+function decodeString(bytes: Uint8Array, offset: number): { value: string; end: number } {
+  const len = (bytes[offset] << 8) | bytes[offset + 1]
+  return { value: new TextDecoder().decode(bytes.slice(offset + 2, offset + 2 + len)), end: offset + 2 + len }
+}
+
+let METHODS: { create_campaign: Uint8Array; donate: Uint8Array; withdraw: Uint8Array } | null = null
+function getMethods() {
+  if (!METHODS) {
+    METHODS = {
+      create_campaign: new Uint8Array(algosdk.ABIMethod.fromSignature('create_campaign(uint8,uint64,string,string)uint64').getSelector()),
+      donate:          new Uint8Array(algosdk.ABIMethod.fromSignature('donate(uint64,pay)void').getSelector()),
+      withdraw:        new Uint8Array(algosdk.ABIMethod.fromSignature('withdraw(uint64)void').getSelector()),
+    }
+  }
+  return METHODS
+}
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  const [account, setAccount] = useState<string | null>(null)
-  const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null)
-  const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null)
-  const [contract, setContract] = useState<ethers.Contract | null>(null)
-  const [ethPrice, setEthPrice] = useState<number>(0)
-  const [requiredETH, setRequiredETH] = useState<string>('0')
+  const { activeAddress, signTransactions, algodClient: walletAlgod } = useUseWallet()
+  const account = activeAddress ?? null
+  // Use wallet's algod if available, else our own
+  const client = (walletAlgod as any) ?? algodClient
 
-  const connectWallet = async () => {
-    if (typeof window.ethereum !== 'undefined') {
-      try {
-        await window.ethereum.request({ method: 'eth_requestAccounts' })
-        
-        const provider = new ethers.BrowserProvider(window.ethereum)
-        const signer = await provider.getSigner()
-        const account = await signer.getAddress()
-        
-        // Switch to Sepolia if not already
-        try {
-          await window.ethereum.request({
-            method: 'wallet_switchEthereumChain',
-            params: [{ chainId: `0x${parseInt(SEPOLIA_CHAIN_ID).toString(16)}` }],
-          })
-        } catch (switchError: any) {
-          if (switchError.code === 4902) {
-            await window.ethereum.request({
-              method: 'wallet_addEthereumChain',
-              params: [{
-                chainId: `0x${parseInt(SEPOLIA_CHAIN_ID).toString(16)}`,
-                chainName: 'Sepolia Test Network',
-                nativeCurrency: {
-                  name: 'ETH',
-                  symbol: 'ETH',
-                  decimals: 18
-                },
-                rpcUrls: ['https://sepolia.infura.io/v3/'],
-                blockExplorerUrls: ['https://sepolia.etherscan.io/']
-              }]
-            })
-          }
-        }
-        
-        const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer)
-        
-        setProvider(provider)
-        setSigner(signer)
-        setAccount(account)
-        setContract(contract)
-        
-        localStorage.setItem('walletConnected', 'true')
-      } catch (error: any) {
-        console.error('Error connecting wallet:', error)
-      }
-    } else {
-      alert('Please install MetaMask!')
-    }
+  async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
+    const encoded = txns.map(t => algosdk.encodeUnsignedTransaction(t))
+    const signed = await signTransactions(encoded)
+    const { txid } = await client.sendRawTransaction(signed).do()
+    await algosdk.waitForConfirmation(client, txid, 4)
   }
 
-  const disconnectWallet = () => {
-    setAccount(null)
-    setProvider(null)
-    setSigner(null)
-    setContract(null)
-    localStorage.removeItem('walletConnected')
+  async function sendAppCall(appArgs: Uint8Array[]): Promise<void> {
+    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
+    const sp = await client.getTransactionParams().do()
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs })
+    await signAndSend([txn])
   }
 
-  const fetchETHPrice = async () => {
-    if (contract) {
-      try {
-        const price = await contract.getLatestPrice()
-        const priceInUSD = Number(price) / 100000000 // Convert from 8 decimals
-        console.log('ETH Price from Chainlink:', priceInUSD)
-        setEthPrice(priceInUSD)
-        
-        // Set fixed ETH amount for $1 donation
-        setRequiredETH("0.0003")
-      } catch (error: any) {
-        console.error('Error fetching ETH price, using fallbacks:', error)
-        // Use fallback values
-        setEthPrice(3000) // Approximate ETH price
-        setRequiredETH("0.0003") // Fixed $1 worth of ETH
-      }
-    }
+  const createCampaign = async (charityType: number, goalMicroAlgo: number, name: string, imageUrl: string) => {
+    const m = getMethods()
+    return sendAppCall([m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)])
   }
 
-  useEffect(() => {
-    if (localStorage.getItem('walletConnected') === 'true') {
-      connectWallet()
-    }
-  }, [])
+  const donate = async (campaignId: number, amountMicroAlgo: number) => {
+    if (!account || APP_ID === 0) throw new Error('Not connected')
+    const m = getMethods()
+    const sp = await client.getTransactionParams().do()
+    const appAddress = algosdk.getApplicationAddress(APP_ID)
+    const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: account, receiver: appAddress, amount: amountMicroAlgo, suggestedParams: sp })
+    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)] })
+    algosdk.assignGroupID([payTxn, appTxn])
+    await signAndSend([payTxn, appTxn])
+  }
 
-  useEffect(() => {
-    if (contract) {
-      fetchETHPrice()
-      const interval = setInterval(fetchETHPrice, 30000) // Update every 30 seconds
-      return () => clearInterval(interval)
-    }
-  }, [contract])
+  const withdraw = async (campaignId: number) => {
+    const m = getMethods()
+    return sendAppCall([m.withdraw, encodeUint64(campaignId)])
+  }
 
-  const value = {
-    account,
-    provider,
-    signer,
-    contract,
-    isConnected: !!account,
-    connectWallet,
-    disconnectWallet,
-    ethPrice,
-    requiredETH
+  const getTotalCampaigns = async (): Promise<number> => {
+    if (APP_ID === 0) return 0
+    try {
+      const info = await algodClient.getApplicationByID(APP_ID).do()
+      const gs: any[] = info.params.globalState || []
+      const e = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
+      return e ? e.value.uint : 0
+    } catch { return 0 }
+  }
+
+  const getCampaign = async (campaignId: number): Promise<Campaign | null> => {
+    if (APP_ID === 0) return null
+    try {
+      const prefix = new TextEncoder().encode('c_')
+      const boxName = new Uint8Array([...prefix, ...encodeUint64(campaignId)])
+      const box = await algodClient.getApplicationBoxByName(APP_ID, boxName).do()
+      const v = box.value as Uint8Array
+      let o = 0
+      const cId = decodeUint64(v, o); o += 8
+      const cType = v[o]; o += 1
+      const goal = decodeUint64(v, o); o += 8
+      const total = decodeUint64(v, o); o += 8
+      const creator = algosdk.encodeAddress(v.slice(o, o + 32)); o += 32
+      const { value: iName, end: e1 } = decodeString(v, o); o = e1
+      const { value: imgUrl, end: e2 } = decodeString(v, o); o = e2
+      const active = v[o] !== 0; o += 1
+      const createdAt = decodeUint64(v, o)
+      return { campaignId: cId, charityType: cType, goalAmount: goal, totalDonations: total, creator, influencerName: iName, profileImageURL: imgUrl, active, createdAt }
+    } catch { return null }
+  }
+
+  const getAllCampaigns = async (): Promise<Campaign[]> => {
+    const total = await getTotalCampaigns()
+    const results: Campaign[] = []
+    for (let i = 0; i < total; i++) { const c = await getCampaign(i); if (c) results.push(c) }
+    return results
+  }
+
+  const getCampaignsByCreator = async (creator: string): Promise<Campaign[]> =>
+    (await getAllCampaigns()).filter(c => c.creator === creator)
+
+  const getDonorAmount = async (campaignId: number, donor: string): Promise<number> => {
+    if (APP_ID === 0) return 0
+    try {
+      const prefix = new TextEncoder().encode('d_')
+      const donorBytes = algosdk.decodeAddress(donor).publicKey
+      const boxName = new Uint8Array([...prefix, ...donorBytes, ...encodeUint64(campaignId)])
+      const box = await algodClient.getApplicationBoxByName(APP_ID, boxName).do()
+      return decodeUint64(box.value as Uint8Array)
+    } catch { return 0 }
   }
 
   return (
-    <WalletContext.Provider value={value}>
+    <AlgorandContext.Provider value={{ account, isConnected: !!account, algodClient, appId: APP_ID, createCampaign, donate, withdraw, getCampaign, getAllCampaigns, getTotalCampaigns, getDonorAmount, getCampaignsByCreator }}>
       {children}
-    </WalletContext.Provider>
+    </AlgorandContext.Provider>
   )
 }
 
 export function useWallet() {
-  const context = useContext(WalletContext)
-  if (context === undefined) {
-    throw new Error('useWallet must be used within a WalletProvider')
-  }
-  return context
+  const ctx = useContext(AlgorandContext)
+  if (!ctx) throw new Error('useWallet must be used within WalletProvider')
+  return ctx
 }
