@@ -38,6 +38,7 @@ const ALGOD_TOKEN  = process.env.NEXT_PUBLIC_ALGOD_TOKEN  || ''
 const ALGOD_SERVER = process.env.NEXT_PUBLIC_ALGOD_SERVER || 'https://testnet-api.algonode.cloud'
 const ALGOD_PORT   = process.env.NEXT_PUBLIC_ALGOD_PORT   || ''
 export const APP_ID = parseInt(process.env.NEXT_PUBLIC_ALGORAND_APP_ID || '0')
+export const DONATION_AMOUNT_MICRO = 1_000_000
 
 const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
 const AlgorandContext = createContext<AlgorandContextType | undefined>(undefined)
