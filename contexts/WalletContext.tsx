@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import algosdk from 'algosdk'
@@ -89,6 +89,39 @@ function getMethods() {
   return METHODS!
 }
 
+/**
+ * Decode ARC4 Campaign struct from box bytes.
+ *
+ * Layout confirmed from TEAL (withdraw uses box_extract at 25,32 for creator;
+ * donate uses box_extract at 61,1 for active and at 17,8 for total_donations):
+ *
+ *  0- 7  campaign_id    (uint64, 8 bytes)
+ *  8      charity_type   (uint8,  1 byte)
+ *  9-16   goal_amount    (uint64, 8 bytes)
+ * 17-24   total_donations(uint64, 8 bytes)
+ * 25-56   creator        (address, 32 bytes)
+ * 57-58   offset to influencer_name   (uint16, relative to struct start)
+ * 59-60   offset to profile_image_url (uint16, relative to struct start)
+ * 61      active         (bool, bit 7 = value: 0x80 = true)
+ * 62-69   created_at     (uint64, 8 bytes)
+ * 70+     dynamic strings (each: 2-byte length prefix + UTF-8 bytes)
+ */
+function decodeCampaignBox(v: Uint8Array): Campaign {
+  const campaignId    = decodeUint64(v, 0)
+  const charityType   = v[8]
+  const goalAmount    = decodeUint64(v, 9)
+  const totalDonations = decodeUint64(v, 17)
+  const creator       = algosdk.encodeAddress(v.slice(25, 57))
+  // offsets at 57-58 and 59-60 are relative to struct start
+  const nameOffset    = (v[57] << 8) | v[58]
+  const imgOffset     = (v[59] << 8) | v[60]
+  const active        = (v[61] & 0x80) !== 0
+  const createdAt     = decodeUint64(v, 62)
+  const { value: influencerName }  = decodeString(v, nameOffset)
+  const { value: profileImageURL } = decodeString(v, imgOffset)
+  return { campaignId, charityType, goalAmount, totalDonations, creator, influencerName, profileImageURL, active, createdAt }
+}
+
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<string | null>(null)
 
@@ -99,7 +132,6 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connect = async () => {
     try {
-      // Wipe stale WalletConnect session from localStorage so Pera starts fresh
       if (typeof window !== 'undefined') {
         localStorage.removeItem('walletconnect')
         localStorage.removeItem('PeraWallet.Wallet')
@@ -184,18 +216,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (APP_ID === 0) return null
     try {
       const box = await algodClient.getApplicationBoxByName(APP_ID, campaignBoxName(campaignId)).do()
-      const v = box.value as Uint8Array
-      let o = 0
-      const cId = decodeUint64(v, o); o += 8
-      const cType = v[o]; o += 1
-      const goal = decodeUint64(v, o); o += 8
-      const total = decodeUint64(v, o); o += 8
-      const creator = algosdk.encodeAddress(v.slice(o, o + 32)); o += 32
-      const { value: iName, end: e1 } = decodeString(v, o); o = e1
-      const { value: imgUrl, end: e2 } = decodeString(v, o); o = e2
-      const active = v[o] !== 0; o += 1
-      const createdAt = decodeUint64(v, o)
-      return { campaignId: cId, charityType: cType, goalAmount: goal, totalDonations: total, creator, influencerName: iName, profileImageURL: imgUrl, active, createdAt }
+      return decodeCampaignBox(box.value as Uint8Array)
     } catch { return null }
   }
 
