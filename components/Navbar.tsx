@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import Link from 'next/link'
 import { useWallet } from '@/contexts/WalletContext'
@@ -15,22 +15,55 @@ export default function Navbar() {
 
   const handleConnect = async () => {
     if (!peraWallet) return
-    // If already connected, disconnect first then reconnect
     try {
-      if (peraWallet.isConnected) {
-        await peraWallet.disconnect()
-      }
+      // Clear ALL pera/walletconnect session data from localStorage first
+      // This forces Pera to create a fresh session with the currently active account
+      Object.keys(localStorage).forEach(key => {
+        if (
+          key.startsWith('pera') ||
+          key.startsWith('walletconnect') ||
+          key.startsWith('wc@') ||
+          key.includes('PeraWallet') ||
+          key.includes('use-wallet')
+        ) {
+          localStorage.removeItem(key)
+        }
+      })
       await peraWallet.connect()
     } catch (e: any) {
       if (e?.message?.includes('Session currently connected')) {
-        // Already connected — just ignore, wallet state will sync
+        // Session exists — disconnect fully then reconnect
+        try {
+          await peraWallet.disconnect()
+        } catch {}
+        try {
+          await peraWallet.connect()
+        } catch (e2: any) {
+          console.error('Reconnect failed:', e2)
+        }
         return
       }
       console.error(e)
     }
   }
 
-  const handleDisconnect = () => activeWallet?.disconnect()
+  const handleDisconnect = async () => {
+    try {
+      await activeWallet?.disconnect()
+    } catch {}
+    // Also clear localStorage to prevent stale session on next connect
+    Object.keys(localStorage).forEach(key => {
+      if (
+        key.startsWith('pera') ||
+        key.startsWith('walletconnect') ||
+        key.startsWith('wc@') ||
+        key.includes('PeraWallet') ||
+        key.includes('use-wallet')
+      ) {
+        localStorage.removeItem(key)
+      }
+    })
+  }
 
   return (
     <motion.nav initial={{ y: -100 }} animate={{ y: 0 }}
