@@ -99,8 +99,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const client = (walletAlgod as any) ?? algodClient
 
   async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
-    const encoded = txns.map(t => algosdk.encodeUnsignedTransaction(t))
-    const signed = await signTransactions(encoded)
+    // Pass Transaction[] directly — use-wallet handles encoding per wallet type
+    const signedResults = await signTransactions(txns)
+    // Filter out any null entries (unsigned slots in group txns)
+    const signed = signedResults.filter((s): s is Uint8Array => s !== null)
+    if (signed.length === 0) throw new Error('No transactions were signed')
     const { txid } = await client.sendRawTransaction(signed).do()
     await algosdk.waitForConfirmation(client, txid, 4)
   }
