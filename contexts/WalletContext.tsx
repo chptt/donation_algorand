@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import React, { createContext, useContext, ReactNode } from 'react'
 import algosdk from 'algosdk'
@@ -38,7 +38,6 @@ export const APP_ID = parseInt(process.env.NEXT_PUBLIC_ALGORAND_APP_ID || '0')
 export const DONATION_AMOUNT_MICRO = 1_000_000
 
 const algodClient = new algosdk.Algodv2(ALGOD_TOKEN, ALGOD_SERVER, ALGOD_PORT)
-
 const AlgorandContext = createContext<AlgorandContextType | undefined>(undefined)
 
 function encodeUint8(v: number): Uint8Array { return new Uint8Array([v]) }
@@ -66,6 +65,22 @@ function decodeString(bytes: Uint8Array, offset: number): { value: string; end: 
   return { value: new TextDecoder().decode(bytes.slice(offset + 2, offset + 2 + len)), end: offset + 2 + len }
 }
 
+function campaignBoxName(campaignId: number): Uint8Array {
+  return new Uint8Array([...new TextEncoder().encode('c_'), ...encodeUint64(campaignId)])
+}
+
+function donorBoxName(campaignId: number, donor: string): Uint8Array {
+  return new Uint8Array([
+    ...new TextEncoder().encode('d_'),
+    ...algosdk.decodeAddress(donor).publicKey,
+    ...encodeUint64(campaignId),
+  ])
+}
+
+function boxRef(name: Uint8Array): algosdk.BoxReference {
+  return { appIndex: 0, name }
+}
+
 let METHODS: { create_campaign: Uint8Array; donate: Uint8Array; withdraw: Uint8Array } | null = null
 function getMethods() {
   if (!METHODS) {
@@ -81,7 +96,6 @@ function getMethods() {
 export function WalletProvider({ children }: { children: ReactNode }) {
   const { activeAddress, signTransactions, algodClient: walletAlgod } = useUseWallet()
   const account = activeAddress ?? null
-  // Use wallet's algod if available, else our own
   const client = (walletAlgod as any) ?? algodClient
 
   async function signAndSend(txns: algosdk.Transaction[]): Promise<void> {
@@ -91,16 +105,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     await algosdk.waitForConfirmation(client, txid, 4)
   }
 
-  async function sendAppCall(appArgs: Uint8Array[]): Promise<void> {
-    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
-    const sp = await client.getTransactionParams().do()
-    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs })
-    await signAndSend([txn])
-  }
-
   const createCampaign = async (charityType: number, goalMicroAlgo: number, name: string, imageUrl: string) => {
+    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
     const m = getMethods()
-    return sendAppCall([m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)])
+    const sp = await client.getTransactionParams().do()
+    const info = await algodClient.getApplicationByID(APP_ID).do()
+    const gs: any[] = (info.params as any).globalState || []
+    const counterEntry = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
+    const nextId = counterEntry ? Number(counterEntry.value.uint) : 0
+    const boxes = [boxRef(campaignBoxName(nextId))]
+    const appArgs = [m.create_campaign, encodeUint8(charityType), encodeUint64(goalMicroAlgo), encodeString(name), encodeString(imageUrl)]
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs, boxes })
+    await signAndSend([txn])
   }
 
   const donate = async (campaignId: number, amountMicroAlgo: number) => {
@@ -108,33 +124,36 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const m = getMethods()
     const sp = await client.getTransactionParams().do()
     const appAddress = algosdk.getApplicationAddress(APP_ID)
+    const boxes = [boxRef(campaignBoxName(campaignId)), boxRef(donorBoxName(campaignId, account))]
     const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({ sender: account, receiver: appAddress, amount: amountMicroAlgo, suggestedParams: sp })
-    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)] })
+    const appTxn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.donate, encodeUint64(campaignId)], boxes })
     algosdk.assignGroupID([payTxn, appTxn])
     await signAndSend([payTxn, appTxn])
   }
 
   const withdraw = async (campaignId: number) => {
+    if (!account || APP_ID === 0) throw new Error('Not connected or app not deployed')
     const m = getMethods()
-    return sendAppCall([m.withdraw, encodeUint64(campaignId)])
+    const sp = await client.getTransactionParams().do()
+    const boxes = [boxRef(campaignBoxName(campaignId))]
+    const txn = algosdk.makeApplicationNoOpTxnFromObject({ sender: account, suggestedParams: sp, appIndex: APP_ID, appArgs: [m.withdraw, encodeUint64(campaignId)], boxes })
+    await signAndSend([txn])
   }
 
   const getTotalCampaigns = async (): Promise<number> => {
     if (APP_ID === 0) return 0
     try {
       const info = await algodClient.getApplicationByID(APP_ID).do()
-      const gs: any[] = info.params.globalState || []
+      const gs: any[] = (info.params as any).globalState || []
       const e = gs.find((s: any) => Buffer.from(s.key, 'base64').toString() === 'campaign_counter')
-      return e ? e.value.uint : 0
+      return e ? Number(e.value.uint) : 0
     } catch { return 0 }
   }
 
   const getCampaign = async (campaignId: number): Promise<Campaign | null> => {
     if (APP_ID === 0) return null
     try {
-      const prefix = new TextEncoder().encode('c_')
-      const boxName = new Uint8Array([...prefix, ...encodeUint64(campaignId)])
-      const box = await algodClient.getApplicationBoxByName(APP_ID, boxName).do()
+      const box = await algodClient.getApplicationBoxByName(APP_ID, campaignBoxName(campaignId)).do()
       const v = box.value as Uint8Array
       let o = 0
       const cId = decodeUint64(v, o); o += 8
@@ -163,10 +182,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const getDonorAmount = async (campaignId: number, donor: string): Promise<number> => {
     if (APP_ID === 0) return 0
     try {
-      const prefix = new TextEncoder().encode('d_')
-      const donorBytes = algosdk.decodeAddress(donor).publicKey
-      const boxName = new Uint8Array([...prefix, ...donorBytes, ...encodeUint64(campaignId)])
-      const box = await algodClient.getApplicationBoxByName(APP_ID, boxName).do()
+      const box = await algodClient.getApplicationBoxByName(APP_ID, donorBoxName(campaignId, donor)).do()
       return decodeUint64(box.value as Uint8Array)
     } catch { return 0 }
   }
